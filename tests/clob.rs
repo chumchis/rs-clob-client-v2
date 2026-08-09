@@ -2723,7 +2723,7 @@ mod authenticated {
                 .query_param("signature_type", (SignatureType::Eoa as u8).to_string());
             then.status(StatusCode::OK).json_body(json!({
                 "data": [{
-                    "date": "2025-12-08",
+                    "date": "2025-12-08T00:00:00Z",
                     "condition_id": "0x0000000000000000000000000000000000000000000000000000000000000001",
                     "asset_address": "0x0000000000000000000000000000000000000001",
                     "maker_address": "0x0000000000000000000000000000000000000002",
@@ -2777,7 +2777,7 @@ mod authenticated {
                 .query_param("date", date.to_string())
                 .query_param("signature_type", (SignatureType::Eoa as u8).to_string());
             then.status(StatusCode::OK).json_body(json!([{
-                "date": "2025-12-08",
+                "date": "2025-12-08T00:00:00Z",
                 "asset_address": "0x0000000000000000000000000000000000000001",
                 "maker_address": "0x0000000000000000000000000000000000000002",
                 "earnings": 1,
