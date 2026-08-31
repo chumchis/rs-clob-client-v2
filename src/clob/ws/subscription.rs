@@ -106,11 +106,15 @@ impl SubscriptionManager {
 
     /// Start the reconnection handler that re-subscribes on connection recovery.
     pub fn start_reconnection_handler(self: &Arc<Self>) {
-        let this = Arc::clone(self);
+        let weak = Arc::downgrade(self);
 
         tokio::spawn(async move {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
             let mut state_rx = this.connection.state_receiver();
             let mut was_connected = state_rx.borrow().is_connected();
+            drop(this);
 
             loop {
                 // Wait for next state change
@@ -127,6 +131,9 @@ impl SubscriptionManager {
                             // Reconnect to subscriptions
                             #[cfg(feature = "tracing")]
                             tracing::debug!("WebSocket reconnected, re-establishing subscriptions");
+                            let Some(this) = weak.upgrade() else {
+                                break;
+                            };
                             this.resubscribe_all();
                         }
                         was_connected = true;
@@ -561,5 +568,33 @@ impl SubscriptionManager {
         });
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ws::config::Config;
+
+    #[tokio::test]
+    async fn reconnection_handler_does_not_keep_manager_alive() {
+        let interest = Arc::new(InterestTracker::new());
+        let connection = ConnectionManager::new(
+            "ws://127.0.0.1:9".to_owned(),
+            Config::default(),
+            Arc::clone(&interest),
+        )
+        .expect("connection manager");
+        let subscriptions = Arc::new(SubscriptionManager::new(connection, interest));
+        let weak = Arc::downgrade(&subscriptions);
+
+        subscriptions.start_reconnection_handler();
+        drop(subscriptions);
+        tokio::task::yield_now().await;
+
+        assert!(
+            weak.upgrade().is_none(),
+            "reconnection task retained SubscriptionManager"
+        );
     }
 }
