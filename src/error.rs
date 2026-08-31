@@ -79,6 +79,41 @@ impl Error {
             method,
             path,
             message: message.into(),
+            retry_after_seconds: None,
+            rate_limit_reset: None,
+            rate_limit_remaining: None,
+            rate_limit_warning: false,
+        }
+        .into()
+    }
+
+    /// Retain only numeric/boolean retry metadata, never arbitrary HTTP headers.
+    pub fn status_with_headers<S: Into<String>>(
+        status_code: StatusCode,
+        method: Method,
+        path: String,
+        message: S,
+        headers: &header::HeaderMap,
+    ) -> Self {
+        let value = |name| headers.get(name).and_then(|v| v.to_str().ok());
+        let retry_after_seconds = value("retry-after").and_then(|v| {
+            v.parse().ok().or_else(|| {
+                chrono::DateTime::parse_from_rfc2822(v)
+                    .ok()
+                    .map(|date| (date.timestamp() - chrono::Utc::now().timestamp()).max(0) as u64)
+            })
+        });
+        Status {
+            status_code,
+            method,
+            path,
+            message: message.into(),
+            retry_after_seconds,
+            rate_limit_reset: value("poly-ratelimit-reset").and_then(|v| v.parse().ok()),
+            rate_limit_remaining: value("poly-ratelimit-remaining")
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite()),
+            rate_limit_warning: value("poly-ratelimit-warning") == Some("true"),
         }
         .into()
     }
@@ -113,6 +148,10 @@ pub struct Status {
     pub method: Method,
     pub path: String,
     pub message: String,
+    pub retry_after_seconds: Option<u64>,
+    pub rate_limit_reset: Option<i64>,
+    pub rate_limit_remaining: Option<f64>,
+    pub rate_limit_warning: bool,
 }
 
 impl fmt::Display for Status {

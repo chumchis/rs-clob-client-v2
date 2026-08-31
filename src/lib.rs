@@ -277,6 +277,7 @@ async fn request<Response: DeserializeOwned>(
     tracing::Span::current().record("status_code", status_code.as_u16());
 
     if !status_code.is_success() {
+        let headers = response.headers().clone();
         let message = response.text().await.unwrap_or_default();
 
         #[cfg(feature = "tracing")]
@@ -288,7 +289,13 @@ async fn request<Response: DeserializeOwned>(
             "API request failed"
         );
 
-        return Err(Error::status(status_code, method, path, message));
+        return Err(Error::status_with_headers(
+            status_code,
+            method,
+            path,
+            message,
+            &headers,
+        ));
     }
 
     let json_value = response.json::<serde_json::Value>().await?;
@@ -311,6 +318,47 @@ async fn request<Response: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_error_retains_only_safe_retry_metadata() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "120".parse().unwrap());
+        headers.insert("poly-ratelimit-reset", "1788138000".parse().unwrap());
+        headers.insert("poly-ratelimit-remaining", "-2.5".parse().unwrap());
+        headers.insert("poly-ratelimit-warning", "true".parse().unwrap());
+        headers.insert("set-cookie", "private-test-value".parse().unwrap());
+        let err = Error::status_with_headers(
+            StatusCode::TOO_MANY_REQUESTS,
+            reqwest::Method::POST,
+            "/order".into(),
+            "limited",
+            &headers,
+        );
+        let status = err.downcast_ref::<error::Status>().unwrap();
+        assert_eq!(status.retry_after_seconds, Some(120));
+        assert_eq!(status.rate_limit_reset, Some(1788138000));
+        assert_eq!(status.rate_limit_remaining, Some(-2.5));
+        assert!(status.rate_limit_warning);
+        assert!(!format!("{err:?}").contains("private-test-value"));
+        headers.insert(
+            "retry-after",
+            "Mon, 01 Jan 2091 00:00:00 GMT".parse().unwrap(),
+        );
+        let err = Error::status_with_headers(
+            StatusCode::SERVICE_UNAVAILABLE,
+            reqwest::Method::POST,
+            "/order".into(),
+            "disabled",
+            &headers,
+        );
+        assert!(
+            err.downcast_ref::<error::Status>()
+                .unwrap()
+                .retry_after_seconds
+                .unwrap()
+                > 0
+        );
+    }
 
     #[test]
     fn config_contains_80002() {
