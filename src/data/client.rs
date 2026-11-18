@@ -16,10 +16,11 @@
 //!     .user(address!("56687bf447db6ffa42ffe2204a05edaa20f55839"))
 //!     .build();
 //!
-//! let positions = client.positions(&request).await?;
-//! for position in positions {
-//!     println!("{}: {} tokens", position.title, position.size);
+//! let page = client.positions(&request).await?;
+//! for position in &page.data {
+//!     println!("{}: {} tokens", position.title, position.current_size);
 //! }
+//! // Further pages: rebuild the request with `.cursor(page.next_cursor())`.
 //! # Ok(())
 //! # }
 //! ```
@@ -38,8 +39,9 @@ use super::types::request::{
     TraderLeaderboardRequest, TradesRequest, ValueRequest,
 };
 use super::types::response::{
-    Activity, BuilderLeaderboardEntry, BuilderVolumeEntry, ClosedPosition, Health, LiveVolume,
-    MetaHolder, OpenInterest, Position, Trade, Traded, TraderLeaderboardEntry, Value,
+    Activity, BuilderLeaderboardEntry, BuilderVolumeEntry, ClosedPosition, Envelope, Health,
+    LiveVolume, MetaHolder, OpenInterest, Page, Position, Trade, Traded, TraderLeaderboardEntry,
+    Value,
 };
 use crate::{Result, ToQueryParams as _};
 
@@ -131,29 +133,32 @@ impl Client {
         self.get("", &()).await
     }
 
-    /// Fetches current (open) positions for a user.
+    /// Fetches one page of a user's positions (`/v2/positions`).
     ///
-    /// Positions represent holdings of outcome tokens in prediction markets.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the request fails or the API returns an error response.
-    pub async fn positions(&self, req: &PositionsRequest) -> Result<Vec<Position>> {
-        self.get("positions", req).await
-    }
-
-    /// Fetches trade history for a user or markets.
-    ///
-    /// Trades represent executed orders where outcome tokens were bought or sold.
+    /// Defaults to `OPEN`; set `status` for redeemable, mergeable or closed
+    /// positions. Follow [`Page::next_cursor`] for further pages.
     ///
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
-    pub async fn trades(&self, req: &TradesRequest) -> Result<Vec<Trade>> {
-        self.get("trades", req).await
+    pub async fn positions(&self, req: &PositionsRequest) -> Result<Page<Position>> {
+        self.get("v2/positions", req).await
     }
 
-    /// Fetches on-chain activity for a user.
+    /// Fetches one page of trade history (`/v2/trades`), newest first.
+    ///
+    /// Follow [`Page::next_cursor`] (pass it as `cursor`) for further pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the API returns an error response.
+    pub async fn trades(&self, req: &TradesRequest) -> Result<Page<Trade>> {
+        self.get("v2/trades", req).await
+    }
+
+    /// Fetches one page of on-chain activity for a user (`/v2/activity`).
+    ///
+    /// Follow [`Page::next_cursor`] (pass it as `cursor`) for further pages.
     ///
     /// Returns various on-chain operations including trades, splits, merges,
     /// redemptions, rewards, and conversions.
@@ -161,8 +166,8 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
-    pub async fn activity(&self, req: &ActivityRequest) -> Result<Vec<Activity>> {
-        self.get("activity", req).await
+    pub async fn activity(&self, req: &ActivityRequest) -> Result<Page<Activity>> {
+        self.get("v2/activity", req).await
     }
 
     /// Fetches top token holders for specified markets.
@@ -172,19 +177,23 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
+    #[deprecated(
+        note = "Data API v1 route, retired 2026-11-02; not yet migrated to v2 in this SDK"
+    )]
     pub async fn holders(&self, req: &HoldersRequest) -> Result<Vec<MetaHolder>> {
         self.get("holders", req).await
     }
 
-    /// Fetches the total value of a user's positions.
+    /// Fetches the total value of a user's positions (`/v2/value`).
     ///
-    /// Optionally filtered by specific markets.
+    /// Optionally filtered by specific markets. `None` when the API answers `data: null`.
     ///
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
-    pub async fn value(&self, req: &ValueRequest) -> Result<Vec<Value>> {
-        self.get("value", req).await
+    pub async fn value(&self, req: &ValueRequest) -> Result<Option<Value>> {
+        let envelope: Envelope<Value> = self.get("v2/value", req).await?;
+        Ok(envelope.data)
     }
 
     /// Fetches closed (historical) positions for a user.
@@ -194,6 +203,9 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
+    #[deprecated(
+        note = "Data API v1 route, retired 2026-11-02; not yet migrated to v2 in this SDK"
+    )]
     pub async fn closed_positions(
         &self,
         req: &ClosedPositionsRequest,
@@ -208,6 +220,9 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
+    #[deprecated(
+        note = "Data API v1 route, retired 2026-11-02; not yet migrated to v2 in this SDK"
+    )]
     pub async fn leaderboard(
         &self,
         req: &TraderLeaderboardRequest,
@@ -220,6 +235,9 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
+    #[deprecated(
+        note = "Data API v1 route, retired 2026-11-02; not yet migrated to v2 in this SDK"
+    )]
     pub async fn traded(&self, req: &TradedRequest) -> Result<Traded> {
         self.get("traded", req).await
     }
@@ -231,6 +249,9 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
+    #[deprecated(
+        note = "Data API v1 route, retired 2026-11-02; not yet migrated to v2 in this SDK"
+    )]
     pub async fn open_interest(&self, req: &OpenInterestRequest) -> Result<Vec<OpenInterest>> {
         self.get("oi", req).await
     }
@@ -242,6 +263,9 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
+    #[deprecated(
+        note = "Data API v1 route, retired 2026-11-02; not yet migrated to v2 in this SDK"
+    )]
     pub async fn live_volume(&self, req: &LiveVolumeRequest) -> Result<Vec<LiveVolume>> {
         self.get("live-volume", req).await
     }
@@ -254,6 +278,9 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
+    #[deprecated(
+        note = "Data API v1 route, retired 2026-11-02; not yet migrated to v2 in this SDK"
+    )]
     pub async fn builder_leaderboard(
         &self,
         req: &BuilderLeaderboardRequest,
@@ -268,6 +295,9 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request fails or the API returns an error response.
+    #[deprecated(
+        note = "Data API v1 route, retired 2026-11-02; not yet migrated to v2 in this SDK"
+    )]
     pub async fn builder_volume(
         &self,
         req: &BuilderVolumeRequest,

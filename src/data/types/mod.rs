@@ -30,8 +30,8 @@ pub enum Side {
 ///
 /// Activities represent various operations that users can perform on the Polymarket protocol.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum_macros::Display)]
-#[serde(rename_all = "UPPERCASE")]
-#[strum(serialize_all = "UPPERCASE")]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 #[non_exhaustive]
 pub enum ActivityType {
     /// A trade (buy or sell) of outcome tokens.
@@ -50,56 +50,75 @@ pub enum ActivityType {
     Yield,
     /// Maker rebate (fee rebate for providing liquidity).
     MakerRebate,
+    /// Taker rebate.
+    TakerRebate,
+    /// Referral reward.
+    ReferralReward,
+    /// Migration between token versions.
+    Migration,
+    /// Deposit (excluded by default in v2).
+    Deposit,
+    /// Withdrawal (excluded by default in v2).
+    Withdrawal,
+    /// Directional split.
+    DirectionalSplit,
+    /// Directional merge.
+    DirectionalMerge,
+    /// Threshold compose.
+    ThresholdCompose,
+    /// Threshold decompose.
+    ThresholdDecompose,
+    /// Tip (opt-in in v2).
+    Tip,
     /// Unknown activity type from the API (captures the raw value for debugging).
     #[serde(untagged)]
     Unknown(String),
 }
 
-/// Sort criteria for position queries.
+/// Sort criteria for `/v2/positions` queries.
 ///
-/// Determines how positions are ordered in the response. Default is [`Tokens`](Self::Tokens).
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, strum_macros::Display,
-)]
+/// When unset, the server picks a default that depends on the requested status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum_macros::Display)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 #[non_exhaustive]
 pub enum PositionSortBy {
     /// Sort by current value of the position.
-    #[serde(rename = "CURRENT")]
-    #[strum(serialize = "CURRENT")]
-    Current,
-    /// Sort by initial value (cost basis) of the position.
-    #[serde(rename = "INITIAL")]
-    #[strum(serialize = "INITIAL")]
-    Initial,
-    /// Sort by number of tokens held (default).
-    #[default]
-    #[serde(rename = "TOKENS")]
-    #[strum(serialize = "TOKENS")]
-    Tokens,
-    /// Sort by cash profit and loss.
-    #[serde(rename = "CASHPNL")]
-    #[strum(serialize = "CASHPNL")]
-    CashPnl,
-    /// Sort by percentage profit and loss.
-    #[serde(rename = "PERCENTPNL")]
-    #[strum(serialize = "PERCENTPNL")]
-    PercentPnl,
-    /// Sort alphabetically by market title.
-    #[serde(rename = "TITLE")]
-    #[strum(serialize = "TITLE")]
-    Title,
-    /// Sort by markets that are resolving soon.
-    #[serde(rename = "RESOLVING")]
-    #[strum(serialize = "RESOLVING")]
-    Resolving,
+    CurrentValue,
     /// Sort by current market price.
-    #[serde(rename = "PRICE")]
-    #[strum(serialize = "PRICE")]
     Price,
-    /// Sort by average entry price.
-    #[serde(rename = "AVGPRICE")]
-    #[strum(serialize = "AVGPRICE")]
-    AvgPrice,
+    /// Sort by number of tokens held.
+    Tokens,
+    /// Sort by unrealized profit and loss.
+    UnrealizedPnl,
+    /// Sort by realized profit and loss.
+    RealizedPnl,
+    /// Sort by total (realized + unrealized) profit and loss.
+    TotalPnl,
+    /// Sort by the timestamp of the last event on the position.
+    Timestamp,
+}
+
+/// Lifecycle status of a position in `/v2/positions` (default `OPEN`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum_macros::Display)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
+#[non_exhaustive]
+pub enum PositionStatus {
+    /// Open positions (default).
+    Open,
+    /// Resolved winning positions that can be redeemed.
+    Redeemable,
+    /// Resolved losing positions.
+    RedeemableLost,
+    /// Positions that can be merged with the opposite outcome.
+    Mergeable,
+    /// Fully sold or redeemed positions (replaces v1 `/closed-positions`).
+    Closed,
+    /// Status the SDK does not know yet (raw value kept for debugging).
+    #[serde(untagged)]
+    #[strum(default)]
+    Unknown(String),
 }
 
 /// Sort criteria for closed position queries.
@@ -143,13 +162,9 @@ pub enum ClosedPositionSortBy {
 #[strum(serialize_all = "UPPERCASE")]
 #[non_exhaustive]
 pub enum ActivitySortBy {
-    /// Sort by activity timestamp (default).
+    /// Sort by activity timestamp (default; the only order v2 supports).
     #[default]
     Timestamp,
-    /// Sort by number of tokens involved in the activity.
-    Tokens,
-    /// Sort by cash (USDC) value of the activity.
-    Cash,
 }
 
 /// Sort direction for query results.
@@ -276,11 +291,11 @@ pub enum LeaderboardOrderBy {
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
 pub enum MarketFilter {
-    /// Filter by condition IDs (market identifiers).
-    #[serde(rename = "market")]
+    /// Filter by condition IDs (market identifiers); v2 accepts at most 20.
+    #[serde(rename = "condition")]
     Markets(#[serde_as(as = "StringWithSeparator::<CommaSeparator, B256>")] Vec<B256>),
     /// Filter by event IDs (groups of related markets).
-    #[serde(rename = "eventId")]
+    #[serde(rename = "event_id")]
     EventIds(#[serde_as(as = "StringWithSeparator::<CommaSeparator, String>")] Vec<String>),
 }
 
@@ -355,7 +370,6 @@ impl StdError for BoundedIntError {}
 /// let filter = TradeFilter::tokens(dec!(50)).unwrap();
 /// ```
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct TradeFilter {
     /// The type of filter (cash or tokens).

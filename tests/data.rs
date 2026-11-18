@@ -1,4 +1,8 @@
 #![cfg(feature = "data")]
+#![allow(
+    deprecated,
+    reason = "Routes not yet migrated to v2 are deprecated but still covered here"
+)]
 
 use polymarket_client_sdk_v2::types::{Address, B256, U256, address, b256};
 
@@ -41,14 +45,25 @@ mod health {
     }
 }
 
+// Fixtures below mirror live Data API v2 rows captured 2026-11-18 (snake_case,
+// `{data, pagination}` envelope, decimal-string token ids).
+const TOKEN: &str = "36427853946703019398441058018116841663040385586926939372597137394963729892688";
+const OPP_TOKEN: &str =
+    "23619452926393448028310205522377007912330516301043710360058599052114635015038";
+
 mod positions {
     use httpmock::{Method::GET, MockServer};
-    use polymarket_client_sdk_v2::data::{Client, types::request::PositionsRequest};
+    use polymarket_client_sdk_v2::data::{
+        Client,
+        types::request::PositionsRequest,
+        types::{PositionSortBy, PositionStatus},
+    };
+    use polymarket_client_sdk_v2::types::U256;
     use reqwest::StatusCode;
     use rust_decimal_macros::dec;
     use serde_json::json;
 
-    use super::{test_condition_id, test_user};
+    use super::{OPP_TOKEN, TOKEN, test_condition_id, test_user};
 
     #[tokio::test]
     async fn positions_should_succeed() -> anyhow::Result<()> {
@@ -57,80 +72,105 @@ mod positions {
 
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path("/positions")
+                .path("/v2/positions")
                 .query_param("user", "0x1234567890abcdef1234567890abcdef12345678");
-            then.status(StatusCode::OK).json_body(json!([
-                {
-                    "proxyWallet": "0x1234567890abcdef1234567890abcdef12345678",
-                    "asset": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                    "conditionId": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-                    "size": 100.5,
-                    "avgPrice": 0.65,
-                    "initialValue": 65.325,
-                    "currentValue": 70.35,
-                    "cashPnl": 5.025,
-                    "percentPnl": 7.69,
-                    "totalBought": 100.5,
-                    "realizedPnl": 0.0,
-                    "percentRealizedPnl": 0.0,
-                    "curPrice": 0.70,
+            then.status(StatusCode::OK).json_body(json!({
+                "data": [{
+                    "proxy_wallet": "0x1234567890abcdef1234567890abcdef12345678",
+                    "token_id": TOKEN,
+                    "condition_id": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                    "current_size": 5.0,
+                    "avg_price": 0.72,
+                    "entry_cost_usdc": 3.6,
+                    "entry_fees_usdc": 0.07056,
+                    "total_cost_usdc": 3.67056,
+                    "current_price": 0.925,
+                    "current_value": 4.625,
+                    "total_size": 5.0,
+                    "realized_pnl": 0.0,
+                    "unrealized_pnl": 1.025,
+                    "total_pnl": 1.025,
+                    "percent_pnl": 28.4722,
+                    "percent_realized_pnl": 28.4722,
+                    "status": "OPEN",
                     "redeemable": false,
                     "mergeable": false,
-                    "title": "Will BTC hit $100k?",
-                    "slug": "btc-100k",
+                    "negative_risk": false,
+                    "archived": false,
+                    "title": "Bitcoin Up or Down",
+                    "slug": "btc-updown-5m-1795028700",
                     "icon": "https://example.com/btc.png",
-                    "eventSlug": "crypto-prices",
-                    "outcome": "Yes",
-                    "outcomeIndex": 0,
-                    "oppositeOutcome": "No",
-                    "oppositeAsset": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                    "endDate": "2025-12-31",
-                    "negativeRisk": false
-                }
-            ]));
+                    "event_id": "1411315",
+                    "event_slug": "btc-updown-5m-1795028700",
+                    "outcome": "Down",
+                    "outcome_index": 1,
+                    "opposite_outcome": "Up",
+                    "opposite_token_id": OPP_TOKEN,
+                    "end_date": "2026-11-18",
+                    "last_event_at": 1_795_028_803,
+                    "first_entry_at": 1_795_028_803,
+                    "name": "Someone",
+                    "profile_image": "",
+                    "verified": false
+                }],
+                "pagination": {"limit": 100, "offset": 0, "has_more": true, "next_cursor": "c2"}
+            }));
         });
 
         let request = PositionsRequest::builder().user(test_user()).build();
 
-        let response = client.positions(&request).await?;
+        let page = client.positions(&request).await?;
 
-        assert_eq!(response.len(), 1);
-        let pos = &response[0];
+        assert_eq!(page.data.len(), 1);
+        let pos = &page.data[0];
         assert_eq!(pos.proxy_wallet, test_user());
         assert_eq!(pos.condition_id, test_condition_id());
-        assert_eq!(pos.size, dec!(100.5));
-        assert_eq!(pos.title, "Will BTC hit $100k?");
+        assert_eq!(pos.asset, TOKEN.parse::<U256>()?);
+        assert_eq!(pos.opposite_asset, Some(OPP_TOKEN.parse::<U256>()?));
+        assert_eq!(pos.current_size, dec!(5.0));
+        assert_eq!(pos.current_value, dec!(4.625));
+        assert_eq!(pos.status, Some(PositionStatus::Open));
+        assert_eq!(pos.event_id.as_deref(), Some("1411315"));
         assert!(!pos.redeemable);
+        assert!(page.pagination.has_more);
+        assert_eq!(page.next_cursor(), Some("c2"));
         mock.assert();
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn positions_with_filters_should_succeed() -> anyhow::Result<()> {
+    async fn positions_with_status_and_cursor_should_succeed() -> anyhow::Result<()> {
         let server = MockServer::start();
         let client = Client::new(&server.base_url())?;
 
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path("/positions")
+                .path("/v2/positions")
                 .query_param("user", "0x1234567890abcdef1234567890abcdef12345678")
                 .query_param("limit", "10")
-                .query_param("offset", "5")
-                .query_param("redeemable", "true");
-            then.status(StatusCode::OK).json_body(json!([]));
+                .query_param("cursor", "abc")
+                .query_param("status", "CLOSED")
+                .query_param("sort_by", "REALIZED_PNL")
+                .query_param_missing("offset");
+            then.status(StatusCode::OK).json_body(json!({
+                "data": null,
+                "pagination": {"limit": 10, "offset": 0, "has_more": false, "next_cursor": null}
+            }));
         });
 
         let request = PositionsRequest::builder()
             .user(test_user())
             .limit(10)?
-            .offset(5)?
-            .redeemable(true)
+            .cursor("abc")
+            .status(PositionStatus::Closed)
+            .sort_by(PositionSortBy::RealizedPnl)
             .build();
 
-        let response = client.positions(&request).await?;
+        let page = client.positions(&request).await?;
 
-        assert!(response.is_empty());
+        assert!(page.data.is_empty());
+        assert_eq!(page.next_cursor(), None);
         mock.assert();
 
         Ok(())
@@ -139,12 +179,41 @@ mod positions {
 
 mod trades {
     use httpmock::{Method::GET, MockServer};
-    use polymarket_client_sdk_v2::data::{Client, types::Side, types::request::TradesRequest};
+    use polymarket_client_sdk_v2::data::{
+        Client,
+        types::request::TradesRequest,
+        types::{MarketFilter, Side},
+    };
+    use polymarket_client_sdk_v2::types::U256;
     use reqwest::StatusCode;
     use rust_decimal_macros::dec;
     use serde_json::json;
 
-    use super::{test_condition_id, test_user};
+    use super::{TOKEN, test_condition_id, test_user};
+
+    fn row() -> serde_json::Value {
+        json!({
+            "proxy_wallet": "0x1234567890abcdef1234567890abcdef12345678",
+            "side": "BUY",
+            "token_id": TOKEN,
+            "condition_id": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            "size": 5.0,
+            "price": 0.72,
+            "timestamp": 1_795_028_803,
+            "title": "Bitcoin Up or Down",
+            "slug": "btc-updown-5m-1795028700",
+            "icon": "https://example.com/btc.png",
+            "event_slug": "",
+            "outcome": "Down",
+            "outcome_index": 999,
+            "name": "Trader Name",
+            "pseudonym": "Several-Clergyman-Octagon",
+            "bio": "",
+            "profile_image": "",
+            "profile_image_optimized": "",
+            "transaction_hash": "0x636ada23ba0cda6f59f1de90be4b2c052ac4d1ee84e17cc27418950ed78d01a6"
+        })
+    }
 
     #[tokio::test]
     async fn trades_should_succeed() -> anyhow::Result<()> {
@@ -152,43 +221,92 @@ mod trades {
         let client = Client::new(&server.base_url())?;
 
         let mock = server.mock(|when, then| {
-            when.method(GET).path("/trades");
-            then.status(StatusCode::OK).json_body(json!([
-                {
-                    "proxyWallet": "0x1234567890abcdef1234567890abcdef12345678",
-                    "side": "BUY",
-                    "asset": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                    "conditionId": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-                    "size": 50.0,
-                    "price": 0.55,
-                    "timestamp": 1_703_980_800,
-                    "title": "Market Title",
-                    "slug": "market-slug",
-                    "icon": "https://example.com/icon.png",
-                    "eventSlug": "event-slug",
-                    "outcome": "Yes",
-                    "outcomeIndex": 0,
-                    "name": "Trader Name",
-                    "pseudonym": "TraderX",
-                    "bio": "A trader",
-                    "profileImage": "https://example.com/avatar.png",
-                    "profileImageOptimized": "https://example.com/avatar-opt.png",
-                    "transactionHash": "0x2222222222222222222222222222222222222222222222222222222222222222"
-                }
-            ]));
+            when.method(GET).path("/v2/trades");
+            then.status(StatusCode::OK).json_body(json!({
+                "data": [row()],
+                "pagination": {"limit": 100, "offset": 0, "has_more": true, "next_cursor": "eyJk"}
+            }));
         });
 
-        let response = client.trades(&TradesRequest::default()).await?;
+        let page = client.trades(&TradesRequest::default()).await?;
 
-        assert_eq!(response.len(), 1);
-        let trade = &response[0];
+        assert_eq!(page.data.len(), 1);
+        let trade = &page.data[0];
         assert_eq!(trade.proxy_wallet, test_user());
         assert_eq!(trade.condition_id, test_condition_id());
+        assert_eq!(trade.asset, TOKEN.parse::<U256>()?);
         assert_eq!(trade.side, Side::Buy);
-        assert_eq!(trade.size, dec!(50.0));
-        assert_eq!(trade.price, dec!(0.55));
-        assert_eq!(trade.timestamp, 1_703_980_800);
+        assert_eq!(trade.size, dec!(5.0));
+        assert_eq!(trade.price, dec!(0.72));
+        assert_eq!(trade.timestamp, 1_795_028_803);
+        assert_eq!(trade.outcome_index, 999);
+        assert_eq!(trade.bio, None);
+        assert_eq!(page.next_cursor(), Some("eyJk"));
         mock.assert();
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn trades_query_uses_v2_parameter_names() -> anyhow::Result<()> {
+        let server = MockServer::start();
+        let client = Client::new(&server.base_url())?;
+
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v2/trades")
+                .query_param("user", "0x1234567890abcdef1234567890abcdef12345678")
+                .query_param(
+                    "condition",
+                    "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                )
+                .query_param("taker_only", "false")
+                .query_param("limit", "1000")
+                .query_param("cursor", "next")
+                .query_param("start", "10")
+                .query_param("end", "20")
+                .query_param_missing("offset")
+                .query_param_missing("market")
+                .query_param_missing("takerOnly");
+            then.status(StatusCode::OK).json_body(json!({
+                "data": [],
+                "pagination": {"limit": 1000, "offset": 0, "has_more": false, "next_cursor": null}
+            }));
+        });
+
+        let request = TradesRequest::builder()
+            .user(test_user())
+            .filter(MarketFilter::markets([test_condition_id()]))
+            .taker_only(false)
+            .limit(1000)?
+            .cursor("next")
+            .start(10)
+            .end(20)
+            .build();
+        let page = client.trades(&request).await?;
+
+        assert!(page.data.is_empty());
+        assert!(!page.pagination.has_more);
+        mock.assert();
+
+        Ok(())
+    }
+
+    #[test]
+    fn trades_limit_above_v2_maximum_is_rejected() {
+        assert!(TradesRequest::builder().limit(1001).is_err());
+    }
+
+    #[tokio::test]
+    async fn bare_v1_list_is_rejected() -> anyhow::Result<()> {
+        let server = MockServer::start();
+        let client = Client::new(&server.base_url())?;
+        server.mock(|when, then| {
+            when.method(GET).path("/v2/trades");
+            then.status(StatusCode::OK).json_body(json!([row()]));
+        });
+
+        client.trades(&TradesRequest::default()).await.unwrap_err();
 
         Ok(())
     }
@@ -201,10 +319,11 @@ mod activity {
         types::request::ActivityRequest,
         types::{ActivityType, Side},
     };
+    use polymarket_client_sdk_v2::types::U256;
     use reqwest::StatusCode;
     use serde_json::json;
 
-    use super::{test_condition_id, test_user};
+    use super::{TOKEN, test_condition_id, test_user};
 
     #[tokio::test]
     async fn activity_should_succeed() -> anyhow::Result<()> {
@@ -213,47 +332,74 @@ mod activity {
 
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path("/activity")
-                .query_param("user", "0x1234567890abcdef1234567890abcdef12345678");
-            then.status(StatusCode::OK).json_body(json!([
-                {
-                    "proxyWallet": "0x1234567890abcdef1234567890abcdef12345678",
-                    "timestamp": 1_703_980_800,
-                    "conditionId": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-                    "type": "TRADE",
-                    "size": 100.0,
-                    "usdcSize": 55.0,
-                    "transactionHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
-                    "price": 0.55,
-                    "asset": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                    "side": "BUY",
-                    "outcomeIndex": 0,
-                    "title": "Market",
-                    "slug": "market-slug",
-                    "outcome": "Yes"
-                },
-                {
-                    "proxyWallet": "0x1234567890abcdef1234567890abcdef12345678",
-                    "timestamp": 1_703_980_900,
-                    "conditionId": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-                    "type": "REDEEM",
-                    "size": 100.0,
-                    "usdcSize": 100.0,
-                    "transactionHash": "0x2222222222222222222222222222222222222222222222222222222222222222"
-                }
-            ]));
+                .path("/v2/activity")
+                .query_param("user", "0x1234567890abcdef1234567890abcdef12345678")
+                .query_param("type", "TRADE,REDEEM")
+                .query_param("cursor", "c1")
+                .query_param_missing("offset");
+            then.status(StatusCode::OK).json_body(json!({
+                "data": [
+                    {
+                        "proxy_wallet": "0x1234567890abcdef1234567890abcdef12345678",
+                        "timestamp": 1_703_980_800,
+                        "condition_id": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                        "type": "TRADE",
+                        "size": 100.0,
+                        "usdc_size": 55.0,
+                        "transaction_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                        "price": 0.55,
+                        "token_id": TOKEN,
+                        "side": "BUY",
+                        "outcome_index": 0,
+                        "title": "Market",
+                        "slug": "market-slug",
+                        "icon": "",
+                        "event_slug": "",
+                        "outcome": "Yes",
+                        "name": "",
+                        "pseudonym": "",
+                        "bio": "",
+                        "profile_image": "",
+                        "profile_image_optimized": "",
+                        "is_combo": false
+                    },
+                    {
+                        "proxy_wallet": "0x1234567890abcdef1234567890abcdef12345678",
+                        "timestamp": 1_703_980_900,
+                        "condition_id": "",
+                        "type": "MAKER_REBATE",
+                        "size": 0.0,
+                        "usdc_size": 1.5,
+                        "transaction_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                        "price": 0.0,
+                        "token_id": "",
+                        "side": "",
+                        "outcome_index": 999
+                    }
+                ],
+                "pagination": {"limit": 100, "offset": 0, "has_more": false, "next_cursor": null}
+            }));
         });
 
-        let request = ActivityRequest::builder().user(test_user()).build();
+        let request = ActivityRequest::builder()
+            .user(test_user())
+            .activity_types(vec![ActivityType::Trade, ActivityType::Redeem])
+            .cursor("c1")
+            .build();
 
-        let response = client.activity(&request).await?;
+        let page = client.activity(&request).await?;
 
-        assert_eq!(response.len(), 2);
-        assert_eq!(response[0].proxy_wallet, test_user());
-        assert_eq!(response[0].condition_id, Some(test_condition_id()));
-        assert_eq!(response[0].activity_type, ActivityType::Trade);
-        assert_eq!(response[0].side, Some(Side::Buy));
-        assert_eq!(response[1].activity_type, ActivityType::Redeem);
+        assert_eq!(page.data.len(), 2);
+        assert_eq!(page.data[0].proxy_wallet, test_user());
+        assert_eq!(page.data[0].condition_id, Some(test_condition_id()));
+        assert_eq!(page.data[0].asset, Some(TOKEN.parse::<U256>()?));
+        assert_eq!(page.data[0].activity_type, ActivityType::Trade);
+        assert_eq!(page.data[0].side, Some(Side::Buy));
+        assert_eq!(page.data[1].activity_type, ActivityType::MakerRebate);
+        assert_eq!(page.data[1].condition_id, None);
+        assert_eq!(page.data[1].asset, None);
+        assert_eq!(page.data[1].side, None);
+        assert_eq!(page.next_cursor(), None);
         mock.assert();
 
         Ok(())
@@ -341,7 +487,7 @@ mod value {
     use rust_decimal_macros::dec;
     use serde_json::json;
 
-    use super::test_user;
+    use super::{test_condition_id, test_user};
 
     #[tokio::test]
     async fn value_should_succeed() -> anyhow::Result<()> {
@@ -350,24 +496,45 @@ mod value {
 
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path("/value")
-                .query_param("user", "0x1234567890abcdef1234567890abcdef12345678");
-            then.status(StatusCode::OK).json_body(json!([
-                {
-                    "user": "0x1234567890abcdef1234567890abcdef12345678",
+                .path("/v2/value")
+                .query_param("user", "0x1234567890abcdef1234567890abcdef12345678")
+                .query_param(
+                    "condition",
+                    "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                );
+            then.status(StatusCode::OK).json_body(json!({
+                "data": {
+                    "proxy_wallet": "0x1234567890abcdef1234567890abcdef12345678",
                     "value": 12345.67
                 }
-            ]));
+            }));
+        });
+
+        let request = ValueRequest::builder()
+            .user(test_user())
+            .markets(vec![test_condition_id()])
+            .build();
+
+        let value = client.value(&request).await?.expect("value present");
+
+        assert_eq!(value.user, test_user());
+        assert_eq!(value.value, dec!(12345.67));
+        mock.assert();
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn value_null_data_is_none() -> anyhow::Result<()> {
+        let server = MockServer::start();
+        let client = Client::new(&server.base_url())?;
+        server.mock(|when, then| {
+            when.method(GET).path("/v2/value");
+            then.status(StatusCode::OK).json_body(json!({"data": null}));
         });
 
         let request = ValueRequest::builder().user(test_user()).build();
-
-        let response = client.value(&request).await?;
-
-        assert_eq!(response.len(), 1);
-        assert_eq!(response[0].user, test_user());
-        assert_eq!(response[0].value, dec!(12345.67));
-        mock.assert();
+        assert!(client.value(&request).await?.is_none());
 
         Ok(())
     }
@@ -888,7 +1055,7 @@ mod error_handling {
         let client = Client::new(&server.base_url())?;
 
         let mock = server.mock(|when, then| {
-            when.method(GET).path("/positions");
+            when.method(GET).path("/v2/positions");
             then.status(StatusCode::BAD_REQUEST).json_body(json!({
                 "error": "Invalid user address"
             }));
@@ -912,7 +1079,7 @@ mod error_handling {
         let client = Client::new(&server.base_url())?;
 
         let mock = server.mock(|when, then| {
-            when.method(GET).path("/positions");
+            when.method(GET).path("/v2/positions");
             then.status(StatusCode::INTERNAL_SERVER_ERROR)
                 .json_body(json!({
                     "error": "Internal server error"
@@ -937,7 +1104,7 @@ mod error_handling {
         let client = Client::new(&server.base_url())?;
 
         let mock = server.mock(|when, then| {
-            when.method(GET).path("/positions");
+            when.method(GET).path("/v2/positions");
             then.status(StatusCode::OK).body("null");
         });
 
@@ -985,7 +1152,7 @@ mod types {
         },
         types::{
             ActivityType, BoundedIntError, LeaderboardCategory, LeaderboardOrderBy, MarketFilter,
-            PositionSortBy, Side, SortDirection, TimePeriod, TradeFilter,
+            PositionSortBy, PositionStatus, Side, SortDirection, TimePeriod, TradeFilter,
         },
     };
     use rust_decimal_macros::dec;
@@ -1006,13 +1173,13 @@ mod types {
         drop(
             PositionsRequest::builder()
                 .user(address!("56687bf447db6ffa42ffe2204a05edaa20f55839"))
-                .limit(500)
+                .limit(1000)
                 .unwrap()
                 .build(),
         );
         let err = PositionsRequest::builder()
             .user(address!("56687bf447db6ffa42ffe2204a05edaa20f55839"))
-            .limit(501);
+            .limit(1001);
         assert!(matches!(err, Err(BoundedIntError { .. })));
 
         // HoldersRequest limit: 0-20
@@ -1074,15 +1241,15 @@ mod types {
             .user(address!("56687bf447db6ffa42ffe2204a05edaa20f55839"))
             .limit(50)
             .unwrap()
-            .sort_by(PositionSortBy::CashPnl)
+            .sort_by(PositionSortBy::UnrealizedPnl)
             .sort_direction(SortDirection::Desc)
             .build();
 
         let qs = req.query_params(None);
         assert!(qs.contains("user=0x"));
         assert!(qs.contains("limit=50"));
-        assert!(qs.contains("sortBy=CASHPNL"));
-        assert!(qs.contains("sortDirection=DESC"));
+        assert!(qs.contains("sort_by=UNREALIZED_PNL"));
+        assert!(qs.contains("sort_direction=DESC"));
     }
 
     #[test]
@@ -1096,9 +1263,9 @@ mod types {
             .build();
 
         let qs = req.query_params(None);
-        assert!(qs.contains("market="));
+        assert!(qs.contains("condition="));
         assert!(qs.contains("%2C")); // URL-encoded comma
-        assert!(!qs.contains("eventId="));
+        assert!(!qs.contains("event_id="));
     }
 
     #[test]
@@ -1109,8 +1276,8 @@ mod types {
             .build();
 
         let qs = req.query_params(None);
-        assert!(qs.contains("eventId=1%2C2")); // URL-encoded "1,2"
-        assert!(!qs.contains("market="));
+        assert!(qs.contains("event_id=1%2C2")); // URL-encoded "1,2"
+        assert!(!qs.contains("condition="));
     }
 
     #[test]
@@ -1127,8 +1294,8 @@ mod types {
             .build();
 
         let qs = req.query_params(None);
-        assert!(qs.contains("filterType=CASH"));
-        assert!(qs.contains("filterAmount=100"));
+        assert!(qs.contains("filter_type=CASH"));
+        assert!(qs.contains("filter_amount=100"));
     }
 
     #[test]
@@ -1182,8 +1349,11 @@ mod types {
         assert_eq!(Side::Buy.to_string(), "BUY");
         assert_eq!(Side::Sell.to_string(), "SELL");
         assert_eq!(ActivityType::Trade.to_string(), "TRADE");
-        assert_eq!(PositionSortBy::CashPnl.to_string(), "CASHPNL");
-        assert_eq!(PositionSortBy::PercentPnl.to_string(), "PERCENTPNL");
+        assert_eq!(PositionSortBy::TotalPnl.to_string(), "TOTAL_PNL");
+        assert_eq!(
+            PositionStatus::RedeemableLost.to_string(),
+            "REDEEMABLE_LOST"
+        );
         assert_eq!(TimePeriod::All.to_string(), "ALL");
         assert_eq!(LeaderboardCategory::Overall.to_string(), "OVERALL");
     }
@@ -1200,13 +1370,12 @@ mod types {
 
     #[test]
     fn all_position_sort_by_display() {
-        assert_eq!(PositionSortBy::Current.to_string(), "CURRENT");
-        assert_eq!(PositionSortBy::Initial.to_string(), "INITIAL");
-        assert_eq!(PositionSortBy::Tokens.to_string(), "TOKENS");
-        assert_eq!(PositionSortBy::Title.to_string(), "TITLE");
-        assert_eq!(PositionSortBy::Resolving.to_string(), "RESOLVING");
+        assert_eq!(PositionSortBy::CurrentValue.to_string(), "CURRENT_VALUE");
         assert_eq!(PositionSortBy::Price.to_string(), "PRICE");
-        assert_eq!(PositionSortBy::AvgPrice.to_string(), "AVGPRICE");
+        assert_eq!(PositionSortBy::Tokens.to_string(), "TOKENS");
+        assert_eq!(PositionSortBy::UnrealizedPnl.to_string(), "UNREALIZED_PNL");
+        assert_eq!(PositionSortBy::RealizedPnl.to_string(), "REALIZED_PNL");
+        assert_eq!(PositionSortBy::Timestamp.to_string(), "TIMESTAMP");
     }
 
     #[test]
@@ -1250,12 +1419,12 @@ mod error_display {
     fn bounded_int_error_display() {
         let err = PositionsRequest::builder()
             .user(address!("56687bf447db6ffa42ffe2204a05edaa20f55839"))
-            .limit(501);
+            .limit(1001);
         let Err(err) = err else {
             panic!("Expected an error")
         };
-        assert!(err.to_string().contains("500"));
-        assert!(err.to_string().contains("501"));
+        assert!(err.to_string().contains("1000"));
+        assert!(err.to_string().contains("1001"));
     }
 
     #[test]
@@ -1268,8 +1437,8 @@ mod error_display {
 mod request_query_string_extended {
     use polymarket_client_sdk_v2::ToQueryParams as _;
     use polymarket_client_sdk_v2::data::types::{
-        ActivitySortBy, ClosedPositionSortBy, MarketFilter, PositionSortBy, Side, SortDirection,
-        TradeFilter,
+        ActivitySortBy, ClosedPositionSortBy, MarketFilter, PositionSortBy, PositionStatus, Side,
+        SortDirection, TradeFilter,
         request::{
             ActivityRequest, BuilderLeaderboardRequest, ClosedPositionsRequest, HoldersRequest,
             OpenInterestRequest, PositionsRequest, TraderLeaderboardRequest, TradesRequest,
@@ -1292,16 +1461,17 @@ mod request_query_string_extended {
     fn positions_request_full() {
         let req = PositionsRequest::builder()
             .user(test_addr())
-            .size_threshold(dec!(100))
-            .mergeable(true)
-            .sort_by(PositionSortBy::Current)
+            .size_filter(TradeFilter::tokens(dec!(100)).unwrap())
+            .status(PositionStatus::Mergeable)
+            .sort_by(PositionSortBy::CurrentValue)
             .title("test")
             .build();
 
         let qs = req.query_params(None);
-        assert!(qs.contains("sizeThreshold="));
-        assert!(qs.contains("mergeable="));
-        assert!(qs.contains("sortBy="));
+        assert!(qs.contains("filter_type=TOKENS"));
+        assert!(qs.contains("filter_amount=100"));
+        assert!(qs.contains("status=MERGEABLE"));
+        assert!(qs.contains("sort_by=CURRENT_VALUE"));
         assert!(qs.contains("title="));
     }
 
@@ -1318,9 +1488,10 @@ mod request_query_string_extended {
 
         let qs = req.query_params(None);
         assert!(qs.contains("user="));
-        assert!(qs.contains("market="));
+        assert!(qs.contains("condition="));
+        assert!(!qs.contains("market="));
         assert!(qs.contains("limit="));
-        assert!(qs.contains("takerOnly="));
+        assert!(qs.contains("taker_only="));
         assert!(qs.contains("side="));
     }
 
@@ -1339,11 +1510,11 @@ mod request_query_string_extended {
             .build();
 
         let qs = req.query_params(None);
-        assert!(qs.contains("eventId="));
+        assert!(qs.contains("event_id="));
         assert!(qs.contains("start="));
         assert!(qs.contains("end="));
-        assert!(qs.contains("sortBy="));
-        assert!(qs.contains("sortDirection="));
+        assert!(qs.contains("sort_by="));
+        assert!(qs.contains("sort_direction="));
         assert!(qs.contains("side="));
     }
 
@@ -1367,7 +1538,7 @@ mod request_query_string_extended {
             .build();
 
         let qs = req.query_params(None);
-        assert!(qs.contains("market="));
+        assert!(qs.contains("condition="));
     }
 
     #[test]
@@ -1383,7 +1554,7 @@ mod request_query_string_extended {
             .build();
 
         let qs = req.query_params(None);
-        assert!(qs.contains("market="));
+        assert!(qs.contains("condition="));
         assert!(qs.contains("title="));
         assert!(qs.contains("sortBy="));
         assert!(qs.contains("sortDirection="));
@@ -1419,7 +1590,7 @@ mod request_query_string_extended {
             .build();
 
         let qs = req.query_params(None);
-        assert!(qs.contains("filterType=TOKENS"));
+        assert!(qs.contains("filter_type=TOKENS"));
     }
 
     #[test]
@@ -1487,8 +1658,7 @@ mod request_query_string_extended {
 
     #[test]
     fn activity_sort_by_variants() {
-        assert_eq!(ActivitySortBy::Tokens.to_string(), "TOKENS");
-        assert_eq!(ActivitySortBy::Cash.to_string(), "CASH");
+        assert_eq!(ActivitySortBy::Timestamp.to_string(), "TIMESTAMP");
     }
 
     #[test]
@@ -1506,11 +1676,12 @@ mod request_query_string_extended {
     }
 
     #[test]
-    fn trades_request_with_offset() {
-        let req = TradesRequest::builder().offset(100).unwrap().build();
+    fn trades_request_with_cursor() {
+        let req = TradesRequest::builder().cursor("abc").build();
 
         let qs = req.query_params(None);
-        assert!(qs.contains("offset=100"));
+        assert!(qs.contains("cursor=abc"));
+        assert!(!qs.contains("offset"));
     }
 
     #[test]

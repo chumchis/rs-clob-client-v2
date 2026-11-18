@@ -15,6 +15,10 @@
 //! LOG_FILE=data.log RUST_LOG=info,hyper_util=off,hyper=off,reqwest=off,h2=off,rustls=off cargo run --example data --features data,tracing
 //! ```
 
+#![allow(
+    deprecated,
+    reason = "Demonstrates routes not yet migrated to Data API v2"
+)]
 use std::fs::File;
 
 use polymarket_client_sdk_v2::data::Client;
@@ -99,12 +103,12 @@ async fn main() -> anyhow::Result<()> {
 
         match &positions_result {
             Ok(positions) => {
-                info!(endpoint = "positions", user = %user, count = positions.len());
-                if let Some(pos) = positions.first() {
+                info!(endpoint = "positions", user = %user, count = positions.data.len());
+                if let Some(pos) = positions.data.first() {
                     info!(
                         endpoint = "positions",
                         market = %pos.condition_id,
-                        size = %pos.size,
+                        size = %pos.current_size,
                         value = %pos.current_value
                     );
                     Some(pos.condition_id)
@@ -166,8 +170,8 @@ async fn main() -> anyhow::Result<()> {
             .await
         {
             Ok(activities) => {
-                info!(endpoint = "activity", user = %user, count = activities.len());
-                if let Some(act) = activities.first() {
+                info!(endpoint = "activity", user = %user, count = activities.data.len());
+                if let Some(act) = activities.data.first() {
                     info!(
                         endpoint = "activity",
                         activity_type = ?act.activity_type,
@@ -182,9 +186,9 @@ async fn main() -> anyhow::Result<()> {
             .value(&ValueRequest::builder().user(user).build())
             .await
         {
-            Ok(values) => {
-                info!(endpoint = "value", user = %user, count = values.len());
-                if let Some(value) = values.first() {
+            Ok(value) => {
+                info!(endpoint = "value", user = %user, found = value.is_some());
+                if let Some(value) = value {
                     info!(
                         endpoint = "value",
                         user = %value.user,
@@ -235,8 +239,8 @@ async fn main() -> anyhow::Result<()> {
     // Trades - global trade feed
     match client.trades(&TradesRequest::default()).await {
         Ok(trades) => {
-            info!(endpoint = "trades", count = trades.len());
-            if let Some(trade) = trades.first() {
+            info!(endpoint = "trades", count = trades.data.len());
+            if let Some(trade) = trades.data.first() {
                 info!(
                     endpoint = "trades",
                     market = %trade.condition_id,

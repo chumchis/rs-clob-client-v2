@@ -13,21 +13,21 @@
 //!
 //! ## Available Endpoints
 //!
+//! Polymarket retired Data API v1 on 2026-11-02. The core user routes are on v2:
+//! `{data, pagination}` envelope, `snake_case` rows, opaque cursor paging (no `offset`).
+//!
 //! | Endpoint | Description |
 //! |----------|-------------|
 //! | `/` | Health check |
-//! | `/positions` | Get current positions for a user |
-//! | `/trades` | Get trades for a user or markets |
-//! | `/activity` | Get on-chain activity for a user |
-//! | `/holders` | Get top holders for markets |
-//! | `/value` | Get total value of a user's positions |
-//! | `/closed-positions` | Get closed positions for a user |
-//! | `/traded` | Get total markets a user has traded |
-//! | `/oi` | Get open interest for markets |
-//! | `/live-volume` | Get live volume for an event |
-//! | `/v1/leaderboard` | Get trader leaderboard rankings |
-//! | `/v1/builders/leaderboard` | Get builder leaderboard rankings |
-//! | `/v1/builders/volume` | Get daily builder volume time-series |
+//! | `/v2/positions` | Positions for a user, by lifecycle `status` (incl. `CLOSED`) |
+//! | `/v2/trades` | Trades for a user, markets, events or the global tape |
+//! | `/v2/activity` | On-chain activity for a user |
+//! | `/v2/value` | Total value of a user's positions |
+//!
+//! Still on retired v1 routes and marked `#[deprecated]` until migrated:
+//! `holders`, `closed_positions` (use `positions` with `PositionStatus::Closed`),
+//! `traded`, `open_interest`, `live_volume`, `leaderboard`, `builder_leaderboard`,
+//! `builder_volume`.
 //!
 //! # Example
 //!
@@ -44,16 +44,17 @@
 //!     .user(address!("56687bf447db6ffa42ffe2204a05edaa20f55839"))
 //!     .build();
 //!
-//! // Fetch positions
-//! let positions = client.positions(&request).await?;
+//! // Fetch the first page of open positions
+//! let page = client.positions(&request).await?;
 //!
-//! for position in positions {
+//! for position in &page.data {
 //!     println!("{}: {} tokens at ${:.2}",
 //!         position.title,
-//!         position.size,
+//!         position.current_size,
 //!         position.current_value
 //!     );
 //! }
+//! // `page.next_cursor()` is `Some` while more pages remain.
 //! # Ok(())
 //! # }
 //! ```

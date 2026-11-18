@@ -7,8 +7,17 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Deserializer};
 use serde_with::{DefaultOnNull, DisplayFromStr, NoneAsEmptyString, serde_as};
 
-use super::{ActivityType, Side};
+use super::{ActivityType, PositionStatus, Side};
 use crate::types::{Address, B256, Decimal, U256};
+
+/// Deserializes `null` (a documented v2 miss) as an empty list.
+fn null_as_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
 
 /// Deserializes an optional Side, treating empty strings as None.
 fn deserialize_optional_side<'de, D>(deserializer: D) -> Result<Option<Side>, D::Error>
@@ -58,71 +67,164 @@ pub struct ApiError {
     pub error: String,
 }
 
-/// A user's current (open) position in a prediction market.
+/// Cursor pagination state returned by paginated Data API v2 routes.
 ///
-/// Returned by the `/positions` endpoint. Represents holdings of outcome tokens
-/// with associated profit/loss calculations.
+/// Follow [`next_cursor`](Self::next_cursor) until it is `None` (equivalently,
+/// until [`has_more`](Self::has_more) is `false`). v2 rejects `offset`.
+#[derive(Debug, Clone, Default, Deserialize, Builder, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Pagination {
+    /// Page size the server applied.
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Legacy offset echo (always 0 on cursor pages).
+    #[serde(default)]
+    pub offset: Option<i64>,
+    /// Whether another page follows.
+    #[serde(default)]
+    pub has_more: bool,
+    /// Opaque cursor for the next page; `None` on the last page.
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+/// One page of a paginated Data API v2 route: `{data, pagination}`.
+///
+/// A documented miss answers `data: null`, which deserializes as an empty list.
+#[derive(Debug, Clone, Deserialize, Builder)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
+#[non_exhaustive]
+pub struct Page<T> {
+    /// Rows of this page.
+    #[serde(default = "Vec::new", deserialize_with = "null_as_empty_vec")]
+    pub data: Vec<T>,
+    /// Cursor state for the next page.
+    #[serde(default)]
+    pub pagination: Pagination,
+}
+
+impl<T> Page<T> {
+    /// The cursor for the next page, if there is one.
+    #[must_use]
+    pub fn next_cursor(&self) -> Option<&str> {
+        self.pagination
+            .next_cursor
+            .as_deref()
+            .filter(|c| !c.is_empty())
+    }
+}
+
+/// Non-paginated Data API v2 envelope: `{data}`. `data` is `None` on a documented miss.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
+#[non_exhaustive]
+pub struct Envelope<T> {
+    /// The payload, or `None` when the API answers `data: null`.
+    #[serde(default = "Option::default")]
+    pub data: Option<T>,
+}
+
+/// A user's position in a prediction market (Data API v2 `/v2/positions` row).
+///
+/// The same row shape is returned for every lifecycle `status`
+/// (`OPEN`, `REDEEMABLE`, `REDEEMABLE_LOST`, `MERGEABLE`, `CLOSED`).
 #[serde_as]
 #[derive(Debug, Clone, Deserialize, Builder)]
-#[serde(rename_all = "camelCase")]
+#[expect(clippy::struct_excessive_bools, reason = "Mirrors the v2 row's flags")]
 #[non_exhaustive]
 pub struct Position {
     /// The user's proxy wallet address.
     pub proxy_wallet: Address,
-    /// The outcome token asset identifier
+    /// The outcome token identifier.
+    #[serde(rename = "token_id")]
     pub asset: U256,
     /// The market condition ID (unique market identifier).
     pub condition_id: B256,
-    /// Number of outcome tokens held.
-    pub size: Decimal,
+    /// Number of outcome tokens currently held.
+    pub current_size: Decimal,
     /// Average entry price for the position.
     pub avg_price: Decimal,
-    /// Initial value (cost basis) of the position.
-    pub initial_value: Decimal,
+    /// Entry cost in USDC, excluding fees.
+    #[serde(default)]
+    pub entry_cost_usdc: Option<Decimal>,
+    /// Entry fees paid in USDC.
+    #[serde(default)]
+    pub entry_fees_usdc: Option<Decimal>,
+    /// Entry cost plus fees in USDC.
+    #[serde(default)]
+    pub total_cost_usdc: Option<Decimal>,
+    /// Current market price of the outcome.
+    pub current_price: Decimal,
     /// Current market value of the position.
     pub current_value: Decimal,
-    /// Unrealized cash profit/loss.
-    pub cash_pnl: Decimal,
-    /// Unrealized percentage profit/loss.
-    pub percent_pnl: Decimal,
-    /// Total amount bought (cumulative).
-    pub total_bought: Decimal,
-    /// Realized profit/loss from closed portions.
+    /// Total tokens ever acquired in this position.
+    #[serde(default)]
+    pub total_size: Option<Decimal>,
+    /// Realized profit/loss.
     pub realized_pnl: Decimal,
+    /// Unrealized profit/loss.
+    #[serde(default)]
+    pub unrealized_pnl: Option<Decimal>,
+    /// Realized plus unrealized profit/loss.
+    #[serde(default)]
+    pub total_pnl: Option<Decimal>,
+    /// Percentage profit/loss.
+    #[serde(default)]
+    pub percent_pnl: Option<Decimal>,
     /// Realized percentage profit/loss.
-    pub percent_realized_pnl: Decimal,
-    /// Current market price of the outcome.
-    pub cur_price: Decimal,
+    #[serde(default)]
+    pub percent_realized_pnl: Option<Decimal>,
+    /// Lifecycle status (`OPEN`, `REDEEMABLE`, `REDEEMABLE_LOST`, `MERGEABLE`, `CLOSED`).
+    #[serde(default)]
+    pub status: Option<PositionStatus>,
     /// Whether the position can be redeemed (market resolved).
     pub redeemable: bool,
     /// Whether the position can be merged with opposite outcome.
     pub mergeable: bool,
+    /// Whether this is a negative risk market.
+    #[serde(default)]
+    pub negative_risk: bool,
+    /// Whether the market is archived.
+    #[serde(default)]
+    pub archived: bool,
     /// Market title/question.
+    #[serde(default)]
     pub title: String,
     /// Market URL slug.
+    #[serde(default)]
     pub slug: String,
     /// Market icon URL.
+    #[serde(default)]
     pub icon: String,
-    /// Parent event URL slug.
-    pub event_slug: String,
     /// Parent event ID.
     #[serde(default)]
     #[serde_as(as = "NoneAsEmptyString")]
     pub event_id: Option<String>,
+    /// Parent event URL slug.
+    #[serde(default)]
+    pub event_slug: String,
     /// Outcome name (e.g., "Yes", "No", candidate name).
+    #[serde(default)]
     pub outcome: String,
-    /// Outcome index within the market (0 or 1 for binary markets).
+    /// Outcome index within the market (`999` means unlabeled).
     pub outcome_index: i32,
     /// Name of the opposite outcome.
+    #[serde(default)]
     pub opposite_outcome: String,
-    /// Asset identifier of the opposite outcome.
-    pub opposite_asset: U256,
+    /// Token identifier of the opposite outcome.
+    #[serde(default, rename = "opposite_token_id")]
+    #[serde_as(as = "NoneAsEmptyString")]
+    pub opposite_asset: Option<U256>,
     /// Market end/resolution date (if set).
     #[serde(default)]
     #[serde_as(as = "NoneAsEmptyString")]
     pub end_date: Option<NaiveDate>,
-    /// Whether this is a negative risk market.
-    pub negative_risk: bool,
+    /// Unix timestamp of the last event on this position.
+    #[serde(default)]
+    pub last_event_at: Option<i64>,
+    /// Unix timestamp of the first entry into this position.
+    #[serde(default)]
+    pub first_entry_at: Option<i64>,
 }
 
 /// A user's closed (historical) position in a prediction market.
@@ -171,18 +273,18 @@ pub struct ClosedPosition {
 
 /// A trade (buy or sell) of outcome tokens.
 ///
-/// Returned by the `/trades` endpoint. Represents an executed order where
+/// Returned by the Data API v2 `/v2/trades` route (`snake_case` rows). Represents an executed order where
 /// outcome tokens were bought or sold.
 #[serde_as]
 #[derive(Debug, Clone, Deserialize, Builder)]
-#[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct Trade {
     /// The trader's proxy wallet address.
     pub proxy_wallet: Address,
     /// Trade side (BUY or SELL).
     pub side: Side,
-    /// The outcome token asset identifier (decimal string from API).
+    /// The outcome token identifier (`token_id` in v2).
+    #[serde(rename = "token_id")]
     pub asset: U256,
     /// The market condition ID (unique market identifier).
     pub condition_id: B256,
@@ -197,12 +299,14 @@ pub struct Trade {
     /// Market URL slug.
     pub slug: String,
     /// Market icon URL.
+    #[serde(default)]
     pub icon: String,
-    /// Parent event URL slug.
+    /// Parent event URL slug (may be empty).
+    #[serde(default)]
     pub event_slug: String,
     /// Outcome name (e.g., "Yes", "No", candidate name).
     pub outcome: String,
-    /// Outcome index within the market (0 or 1 for binary markets).
+    /// Outcome index within the market (`999` means unlabeled).
     pub outcome_index: i32,
     /// Trader's display name (if public).
     #[serde(default)]
@@ -230,11 +334,10 @@ pub struct Trade {
 
 /// An on-chain activity record for a user.
 ///
-/// Returned by the `/activity` endpoint. Represents various on-chain operations
+/// Returned by the Data API v2 `/v2/activity` route (`snake_case` rows). Represents various on-chain operations
 /// including trades, splits, merges, redemptions, rewards, and conversions.
 #[serde_as]
 #[derive(Debug, Clone, Deserialize, Builder)]
-#[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct Activity {
     /// The user's proxy wallet address.
@@ -257,8 +360,8 @@ pub struct Activity {
     pub transaction_hash: B256,
     /// Price per token (for trades).
     pub price: Option<Decimal>,
-    /// Outcome token asset identifier
-    #[serde(default)]
+    /// Outcome token identifier (`token_id` in v2).
+    #[serde(default, rename = "token_id")]
     #[serde_as(as = "NoneAsEmptyString")]
     pub asset: Option<U256>,
     /// Trade side (for trades only).
@@ -306,6 +409,9 @@ pub struct Activity {
     #[serde(default)]
     #[serde_as(as = "NoneAsEmptyString")]
     pub profile_image_optimized: Option<String>,
+    /// Whether the row belongs to a combo position.
+    #[serde(default)]
+    pub is_combo: Option<bool>,
 }
 
 /// A holder of outcome tokens in a market.
@@ -376,11 +482,12 @@ pub struct Traded {
 
 /// Total value of a user's positions.
 ///
-/// Returned by the `/value` endpoint.
+/// Returned by the Data API v2 `/v2/value` route as the `data` object.
 #[derive(Debug, Clone, Deserialize, Builder)]
 #[non_exhaustive]
 pub struct Value {
-    /// The user's address.
+    /// The user's proxy wallet address.
+    #[serde(rename = "proxy_wallet", alias = "user")]
     pub user: Address,
     /// Total value of positions in USDC.
     pub value: Decimal,
