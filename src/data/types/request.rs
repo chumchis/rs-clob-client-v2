@@ -14,9 +14,10 @@ use serde_with::{StringWithSeparator, formats::CommaSeparator, serde_as, skip_se
 
 use super::{
     ActivitySortBy, ActivityType, BoundedIntError, ClosedPositionSortBy, LeaderboardCategory,
-    LeaderboardOrderBy, MarketFilter, PositionSortBy, Side, SortDirection, TimePeriod, TradeFilter,
+    LeaderboardOrderBy, MarketFilter, PositionSortBy, PositionStatus, Side, SortDirection,
+    TimePeriod, TradeFilter,
 };
-use crate::types::{Address, B256, Decimal};
+use crate::types::{Address, B256};
 
 /// Validates that an i32 value is within the specified bounds.
 fn validate_bound(
@@ -32,37 +33,22 @@ fn validate_bound(
     }
 }
 
-/// Request parameters for the `/positions` endpoint.
+/// Request parameters for the Data API v2 `/v2/positions` route.
 ///
-/// Fetches current (open) positions for a user. Positions represent holdings
-/// of outcome tokens in prediction markets.
-///
-/// # Required Parameters
-///
-/// - `user`: The Ethereum address of the user whose positions to retrieve.
-///
-/// # Optional Parameters
-///
-/// - `filter`: Filter by specific markets (condition IDs) or events.
-///   Cannot specify both markets and events.
-/// - `size_threshold`: Minimum position size to include (default: 1).
-/// - `redeemable`: If true, only return positions that can be redeemed.
-/// - `mergeable`: If true, only return positions that can be merged.
-/// - `limit`: Maximum positions to return (0-500, default: 100).
-/// - `offset`: Pagination offset (0-10000, default: 0).
-/// - `sort_by`: Sort criteria (default: TOKENS).
-/// - `sort_direction`: Sort order (default: DESC).
-/// - `title`: Filter by market title substring.
+/// Lists a user's positions in one lifecycle `status` (default `OPEN`).
+/// Pages with an opaque cursor: pass [`Page::next_cursor`](super::response::Page::next_cursor)
+/// back as `cursor` until it is `None`. v2 rejects `offset`.
 ///
 /// # Example
 ///
 /// ```
 /// use polymarket_client_sdk_v2::types::address;
-/// use polymarket_client_sdk_v2::data::{types::request::PositionsRequest, types::{PositionSortBy, SortDirection}};
+/// use polymarket_client_sdk_v2::data::{types::request::PositionsRequest, types::{PositionSortBy, PositionStatus, SortDirection}};
 ///
 /// let request = PositionsRequest::builder()
 ///     .user(address!("56687bf447db6ffa42ffe2204a05edaa20f55839"))
-///     .sort_by(PositionSortBy::CashPnl)
+///     .status(PositionStatus::Closed)
+///     .sort_by(PositionSortBy::RealizedPnl)
 ///     .sort_direction(SortDirection::Desc)
 ///     .build();
 /// ```
@@ -73,29 +59,31 @@ pub struct PositionsRequest {
     /// User address (required).
     #[builder(into)]
     pub user: Address,
-    /// Filter by markets or events. Mutually exclusive options.
+    /// Filter by markets (`condition`, max 20) or events (`event_id`). Mutually exclusive.
     #[serde(flatten, skip_serializing_if = "filter_is_none_or_empty")]
     pub filter: Option<MarketFilter>,
-    /// Minimum position size to include (default: 1).
-    #[serde(rename = "sizeThreshold")]
-    pub size_threshold: Option<Decimal>,
-    /// Only return positions that can be redeemed (default: false).
-    pub redeemable: Option<bool>,
-    /// Only return positions that can be merged (default: false).
-    pub mergeable: Option<bool>,
-    /// Maximum number of positions to return (0-500, default: 100).
-    #[builder(with = |v: i32| -> Result<_, BoundedIntError> { validate_bound(v, 0, 500, "limit") })]
+    /// Lifecycle status (default `OPEN`).
+    pub status: Option<PositionStatus>,
+    /// Minimum holding (tokens) or value (cash).
+    #[serde(flatten)]
+    pub size_filter: Option<TradeFilter>,
+    /// Include archived markets (default false).
+    pub include_archived: Option<bool>,
+    /// Maximum number of positions per page (0-1000). Ignored when `cursor` is set.
+    #[builder(with = |v: i32| -> Result<_, BoundedIntError> { validate_bound(v, 0, 1000, "limit") })]
     pub limit: Option<i32>,
-    /// Pagination offset (0-10000, default: 0).
-    #[builder(with = |v: i32| -> Result<_, BoundedIntError> { validate_bound(v, 0, 10000, "offset") })]
-    pub offset: Option<i32>,
-    /// Sort criteria (default: TOKENS).
-    #[serde(rename = "sortBy")]
+    /// Opaque cursor from a previous page's `pagination.next_cursor`.
+    #[builder(into)]
+    pub cursor: Option<String>,
+    /// Sort criteria (default depends on status).
     pub sort_by: Option<PositionSortBy>,
-    /// Sort direction (default: DESC).
-    #[serde(rename = "sortDirection")]
+    /// Sort direction (default DESC).
     pub sort_direction: Option<SortDirection>,
-    /// Filter by market title substring (max 100 chars).
+    /// Lower bound on `last_event_at` (Unix seconds, inclusive).
+    pub start: Option<u64>,
+    /// Upper bound on `last_event_at` (Unix seconds, inclusive).
+    pub end: Option<u64>,
+    /// Case-insensitive market title substring (max 200 chars).
     #[builder(into)]
     pub title: Option<String>,
 }
@@ -109,20 +97,19 @@ fn filter_is_none_or_empty(f: &Option<MarketFilter>) -> bool {
     }
 }
 
-/// Request parameters for the `/trades` endpoint.
+/// Request parameters for the Data API v2 `/v2/trades` route.
 ///
-/// Fetches trade history for a user or markets. Trades represent executed
-/// orders where outcome tokens were bought or sold.
+/// Fetches trade history for a user, markets, events, or the global tape,
+/// newest first. Pages with an opaque cursor: pass
+/// [`Page::next_cursor`](super::response::Page::next_cursor) back as `cursor`
+/// until it is `None`. v2 rejects `offset`.
 ///
-/// # Optional Parameters
-///
-/// - `user`: Filter by user address.
-/// - `filter`: Filter by specific markets (condition IDs) or events.
-/// - `limit`: Maximum trades to return (0-10000, default: 100).
-/// - `offset`: Pagination offset (0-10000, default: 0).
-/// - `taker_only`: If true, only return taker trades (default: true).
-/// - `trade_filter`: Filter by minimum trade size (cash or tokens).
-/// - `side`: Filter by trade side (BUY or SELL).
+/// - `user`: Filter by user address. `start`/`end` apply only with `user`.
+/// - `filter`: Markets (`condition`, max 20) or events (`event_id`, max 20).
+/// - `limit`: Rows per page (0-1000). Ignored when `cursor` is set.
+/// - `taker_only`: Only taker rows (server default: true).
+/// - `trade_filter`: Minimum trade size (cash or tokens).
+/// - `side`: BUY or SELL.
 ///
 /// # Example
 ///
@@ -147,23 +134,28 @@ pub struct TradesRequest {
     /// Filter by markets or events. Mutually exclusive options.
     #[serde(flatten)]
     pub filter: Option<MarketFilter>,
-    /// Maximum number of trades to return (0-10000, default: 100).
-    #[builder(with = |v: i32| -> Result<_, BoundedIntError> { validate_bound(v, 0, 10000, "limit") })]
+    /// Maximum number of trades per page (0-1000). Ignored when `cursor` is set.
+    #[builder(with = |v: i32| -> Result<_, BoundedIntError> { validate_bound(v, 0, 1000, "limit") })]
     pub limit: Option<i32>,
-    /// Pagination offset (0-10000, default: 0).
-    #[builder(with = |v: i32| -> Result<_, BoundedIntError> { validate_bound(v, 0, 10000, "offset") })]
-    pub offset: Option<i32>,
-    /// Only return taker trades (default: true).
-    #[serde(rename = "takerOnly")]
+    /// Opaque cursor from a previous page's `pagination.next_cursor`.
+    #[builder(into)]
+    pub cursor: Option<String>,
+    /// Only return taker trades (server default: true).
     pub taker_only: Option<bool>,
     /// Filter by minimum trade size. Must provide both type and amount.
     #[serde(flatten)]
     pub trade_filter: Option<TradeFilter>,
     /// Filter by trade side (BUY or SELL).
     pub side: Option<Side>,
+    /// Start timestamp (Unix seconds, inclusive). Only used with `user`.
+    pub start: Option<u64>,
+    /// End timestamp (Unix seconds, inclusive). Only used with `user`.
+    pub end: Option<u64>,
 }
 
-/// Request parameters for the `/activity` endpoint.
+/// Request parameters for the Data API v2 `/v2/activity` route.
+///
+/// Pages with an opaque cursor (`cursor`, from `pagination.next_cursor`); v2 rejects `offset`.
 ///
 /// Fetches on-chain activity for a user, including trades, splits, merges,
 /// redemptions, rewards, and conversions.
@@ -176,8 +168,8 @@ pub struct TradesRequest {
 ///
 /// - `filter`: Filter by specific markets (condition IDs) or events.
 /// - `activity_types`: Filter by activity types (TRADE, SPLIT, MERGE, etc.).
-/// - `limit`: Maximum activities to return (0-500, default: 100).
-/// - `offset`: Pagination offset (0-10000, default: 0).
+/// - `limit`: Activities per page (0-1000, default: 100).
+/// - `cursor`: Opaque cursor from the previous page (binds the sort direction).
 /// - `start`: Start timestamp filter (Unix timestamp).
 /// - `end`: End timestamp filter (Unix timestamp).
 /// - `sort_by`: Sort criteria (default: TIMESTAMP).
@@ -211,22 +203,22 @@ pub struct ActivityRequest {
     #[builder(default)]
     #[serde(rename = "type", skip_serializing_if = "Vec::is_empty")]
     pub activity_types: Vec<ActivityType>,
-    /// Maximum number of activities to return (0-500, default: 100).
-    #[builder(with = |v: i32| -> Result<_, BoundedIntError> { validate_bound(v, 0, 500, "limit") })]
+    /// Maximum number of activities per page (0-1000, default: 100).
+    #[builder(with = |v: i32| -> Result<_, BoundedIntError> { validate_bound(v, 0, 1000, "limit") })]
     pub limit: Option<i32>,
-    /// Pagination offset (0-10000, default: 0).
-    #[builder(with = |v: i32| -> Result<_, BoundedIntError> { validate_bound(v, 0, 10000, "offset") })]
-    pub offset: Option<i32>,
-    /// Start timestamp filter (Unix timestamp, minimum: 0).
+    /// Opaque cursor from a previous page's `pagination.next_cursor`.
+    #[builder(into)]
+    pub cursor: Option<String>,
+    /// Start timestamp filter (Unix seconds, inclusive, on block timestamp).
     pub start: Option<u64>,
-    /// End timestamp filter (Unix timestamp, minimum: 0).
+    /// End timestamp filter (Unix seconds, inclusive).
     pub end: Option<u64>,
-    /// Sort criteria (default: TIMESTAMP).
-    #[serde(rename = "sortBy")]
+    /// Sort criteria (v2 supports only TIMESTAMP).
     pub sort_by: Option<ActivitySortBy>,
     /// Sort direction (default: DESC).
-    #[serde(rename = "sortDirection")]
     pub sort_direction: Option<SortDirection>,
+    /// Exclude deposits and withdrawals (server default: true).
+    pub exclude_deposits_withdrawals: Option<bool>,
     /// Filter by trade side (only applies to TRADE activities).
     pub side: Option<Side>,
 }
@@ -288,7 +280,7 @@ pub struct TradedRequest {
     pub user: Address,
 }
 
-/// Request parameters for the `/value` endpoint.
+/// Request parameters for the Data API v2 `/v2/value` route.
 ///
 /// Fetches the total value of a user's positions, optionally filtered by markets.
 ///
@@ -307,10 +299,10 @@ pub struct ValueRequest {
     /// User address (required).
     #[builder(into)]
     pub user: Address,
-    /// Optional list of condition IDs to filter by.
+    /// Optional list of condition IDs to filter by (max 20).
     #[serde_as(as = "StringWithSeparator::<CommaSeparator, B256>")]
     #[builder(default)]
-    #[serde(rename = "market", skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "condition", skip_serializing_if = "Vec::is_empty")]
     pub markets: Vec<B256>,
 }
 
